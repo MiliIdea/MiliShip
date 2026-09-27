@@ -1,0 +1,23 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Xcode version
+        run: xcodebuild -version
+      - name: Build app
+        run: ./scripts/build_app.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MiliShip-app
+          path: build/MiliShip.app
+          retention-days: 7
