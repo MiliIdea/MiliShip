@@ -16,6 +16,12 @@ CI/CD for Flutter and React Native that runs on your own Mac — builds, signs a
 ![Shorebird](https://img.shields.io/badge/Shorebird-patches-7C3AED?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-2EA043?style=flat-square)
 
+<br>
+
+<img src="docs/images/screenshot.png" alt="Mili Ship's app page: release and patch tags with versions, commits and a Succeeded deployment status for each, a Deploy menu per tag, and the deployment history in the sidebar" width="100%">
+
+<sub>An app's page — every tag, its version and its last deployment</sub>
+
 </div>
 
 <br>
