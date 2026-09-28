@@ -2,8 +2,7 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
-// Served from GitHub Pages at https://miliidea.github.io/MiliShip/
+// Served by Vercel at https://ship.mili.today/
 export default defineConfig({
-  base: '/MiliShip/',
   plugins: [react(), tailwindcss()],
 })

@@ -1,9 +1,11 @@
-name: Website
+name: Website redirect
 
+# The website lives on Vercel at https://ship.mili.today/. GitHub Pages keeps the old
+# https://miliidea.github.io/MiliShip/ address working by redirecting every page there.
 on:
   push:
     branches: [main]
-    paths: ['website/**', '.github/workflows/pages.yml']
+    paths: ['.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -16,30 +18,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: website
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: website/package-lock.json
-      - run: npm ci
-      - run: npm run build
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: website/dist
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Write redirect pages
+        run: |
+          mkdir site
+          for page in index 404; do
+            cat > "site/$page.html" <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>Moved to ship.mili.today</title>
+          <link rel="canonical" href="https://ship.mili.today/">
+          <meta http-equiv="refresh" content="0; url=https://ship.mili.today/">
+          <script>location.replace('https://ship.mili.today/' + location.hash)</script>
+          <p>This site has moved to <a href="https://ship.mili.today/">ship.mili.today</a>.</p>
+          HTML
+          done
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
       - id: deployment
         uses: actions/deploy-pages@v4

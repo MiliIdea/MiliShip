@@ -1,7 +1,7 @@
 /** Everything that changes between releases lives here. */
 export const site = {
   name: 'Mili Ship',
-  url: 'https://miliidea.github.io/MiliShip/',
+  url: 'https://ship.mili.today/',
   repo: 'https://github.com/MiliIdea/MiliShip',
   repoPath: 'MiliIdea/MiliShip',
   /** Fallback until the latest DMG's direct link is fetched (see useDownloadURL). */

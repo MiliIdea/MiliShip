@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://miliidea.github.io/MiliShip/sitemap.xml
+Sitemap: https://ship.mili.today/sitemap.xml
