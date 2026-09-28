@@ -1,14 +1,18 @@
 name: Release
 
-# Push a tag like v0.2.0 to publish a GitHub release with MiliShip-0.2.0.dmg and .zip.
+# Releases are normally made on a Mac with ./scripts/release.sh (signed and notarized with the local
+# Developer ID certificate). This workflow is the CI alternative: run it manually for an existing tag.
 # Signing and notarization run only when the optional secrets below are configured:
 #   MACOS_CERTIFICATE_P12        base64 of a "Developer ID Application" .p12
 #   MACOS_CERTIFICATE_PASSWORD   password of that .p12
 #   NOTARY_KEY_P8                base64 of an App Store Connect API key (.p8)
 #   NOTARY_KEY_ID / NOTARY_ISSUER_ID
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release, e.g. v0.2.0
+        required: true
 
 permissions:
   contents: write
@@ -23,6 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.tag }}
 
       - name: Import Developer ID certificate
         if: env.HAS_CERTIFICATE == 'true'
@@ -58,12 +63,15 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Build, sign and package
-        run: UNIVERSAL=1 VERSION="${GITHUB_REF_NAME#v}" ./scripts/build_app.sh --package
+        run: UNIVERSAL=1 VERSION="${TAG#v}" ./scripts/build_app.sh --package
+        env:
+          TAG: ${{ inputs.tag }}
 
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
         run: |
-          gh release create "$GITHUB_REF_NAME" build/MiliShip-*.dmg build/MiliShip-*.zip \
-            --title "Mili Ship ${GITHUB_REF_NAME#v}" \
+          gh release create "$TAG" build/MiliShip-*.dmg build/MiliShip-*.zip \
+            --title "Mili Ship ${TAG#v}" \
             --generate-notes

@@ -50,5 +50,8 @@ Edit `scripts/generate_icon.py`, then run `python3 scripts/generate_icon.py`. It
 
 ## Releasing
 
-Push a tag like `v0.2.0`. The Release workflow builds a universal app, signs and notarizes it when the
-Developer ID secrets are configured, and attaches `MiliShip-0.2.0.dmg` and `.zip` to a GitHub release.
+Add a `## 0.2.0` section to `CHANGELOG.md`, commit, then run `./scripts/release.sh 0.2.0` on a Mac with a
+Developer ID Application certificate and a notarytool profile. It builds a universal app, signs, notarizes and
+staples it, checks it with Gatekeeper, tags `v0.2.0` and publishes `MiliShip-0.2.0.dmg` and `.zip` as a GitHub
+release with the changelog section as notes. (The Release workflow can do the same on CI for an existing tag
+once Developer ID secrets are configured.)

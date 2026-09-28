@@ -8,6 +8,7 @@
 #   VERSION=1.2.0        marketing version (default: latest git tag without "v", else 0.1.0)
 #   UNIVERSAL=1          Apple silicon + Intel
 #   CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+#   NOTARY_PROFILE=name  notarytool keychain profile (xcrun notarytool store-credentials), or:
 #   NOTARY_KEY_PATH=… NOTARY_KEY_ID=… NOTARY_ISSUER_ID=…   App Store Connect API key for notarization
 set -euo pipefail
 
@@ -55,11 +56,18 @@ else
 fi
 
 notarize() {
-  xcrun notarytool submit "$1" \
-    --key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
+  if [[ -n "${NOTARY_PROFILE:-}" ]]; then
+    xcrun notarytool submit "$1" --keychain-profile "$NOTARY_PROFILE" --wait
+  else
+    xcrun notarytool submit "$1" \
+      --key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
+  fi
 }
 CAN_NOTARIZE=0
-[[ -n "${CODESIGN_IDENTITY:-}" && -n "${NOTARY_KEY_PATH:-}" && -n "${NOTARY_KEY_ID:-}" && -n "${NOTARY_ISSUER_ID:-}" ]] && CAN_NOTARIZE=1
+if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+  [[ -n "${NOTARY_PROFILE:-}" ]] && CAN_NOTARIZE=1
+  [[ -n "${NOTARY_KEY_PATH:-}" && -n "${NOTARY_KEY_ID:-}" && -n "${NOTARY_ISSUER_ID:-}" ]] && CAN_NOTARIZE=1
+fi
 
 if [[ $PACKAGE == 1 ]]; then
   ZIP="$BUILD/$APP_NAME-$VERSION.zip"
