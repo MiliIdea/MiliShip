@@ -3,7 +3,9 @@ name: Build
 on:
   push:
     branches: [main]
+    paths-ignore: ['website/**', '.github/workflows/pages.yml']
   pull_request:
+    paths-ignore: ['website/**']
 
 jobs:
   build:
