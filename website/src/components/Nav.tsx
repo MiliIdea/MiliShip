@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { asset, site } from '../site'
+import { useDownloadURL } from '../useDownloadURL'
 import { GitHubMark } from './GitHubMark'
 
 const links = [
@@ -11,6 +12,7 @@ const links = [
 
 export function Nav() {
   const [scrolled, setScrolled] = useState(false)
+  const downloadURL = useDownloadURL()
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8)
@@ -48,7 +50,7 @@ export function Nav() {
             <GitHubMark />
           </a>
           <a
-            href={site.download}
+            href={downloadURL}
             className="inline-flex h-10 cursor-pointer items-center rounded-lg bg-fg px-4 text-sm font-semibold text-bg transition-colors duration-200 hover:bg-white"
           >
             Download
