@@ -69,6 +69,18 @@ struct AppSummarySections: View {
         }
 
         Section {
+            if app.githubActions.enabled {
+                row("Repository", app.githubRepo?.fullName ?? "not on github.com")
+                row("Runner", app.githubActions.isConnected ? "\(app.githubActions.runnerName) · \(app.githubActions.runnerLabel)" : "not connected")
+                row("Workflow", app.githubActions.workflowPath)
+            } else {
+                row("GitHub Actions", "Off — deployments run in Mili Ship only", mono: false)
+            }
+        } header: {
+            header("GitHub Actions", .github)
+        }
+
+        Section {
             if app.android.enabled {
                 row("Signing", app.android.writesKeyProperties
                     ? "\(app.android.effectiveSigning == .playAppSigning ? "Play App Signing · " : "")\((app.android.keystorePath as NSString).lastPathComponent) · alias \(app.android.keyAlias)"

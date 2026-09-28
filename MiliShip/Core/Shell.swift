@@ -149,7 +149,7 @@ final class ShellRunner: @unchecked Sendable {
         lock.unlock()
     }
 
-    private static func descendants(of pid: pid_t) -> [pid_t] {
+    static func descendants(of pid: pid_t) -> [pid_t] {
         var result: [pid_t] = []
         for child in childPIDs(of: pid) {
             result.append(child)

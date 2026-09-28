@@ -4,6 +4,8 @@
 
 First public version.
 
+- GitHub Actions: Mili Ship installs and manages GitHub's self-hosted runner, adds a workflow to the repository, and runs tag deployments as GitHub Actions jobs with live logs, step groups, annotations, a job summary and cancellation — free, on your Mac.
+- Background mode: closing the window keeps Mili Ship in the menu bar (no Dock icon); it starts there quietly at login, and asks before quitting during a deployment.
 - Add any number of Flutter applications with a step-by-step setup wizard (repository, project, prepare, build & versioning, Google Play, App Store, review).
 - Auto-detection of Flutter apps in single-app repos and melos / pub-workspace monorepos (package name, bundle ID, team ID, Shorebird, FVM, entry points, dart-define files).
 - Builds with Flutter (`flutter build appbundle` / `ipa`) or Shorebird (`release` / `patch`).

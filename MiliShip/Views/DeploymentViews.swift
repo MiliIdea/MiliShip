@@ -101,7 +101,8 @@ struct BuildDetailView: View {
                 HStack(spacing: 10) {
                     if let version = record.version { Label(version, systemImage: "number") }
                     if let commit = record.commit { Label(commit, systemImage: "point.3.connected.trianglepath.dotted") }
-                    Label(record.trigger.capitalized, systemImage: record.trigger == "auto" ? "eye" : "hand.tap")
+                    Label(record.trigger.prefix(1).uppercased() + record.trigger.dropFirst(),
+                          systemImage: record.actionsRunURL != nil ? "arrow.triangle.2.circlepath.circle" : record.trigger == "auto" ? "eye" : "hand.tap")
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         Label(durationText(now: context.date), systemImage: "timer")
                     }
@@ -114,6 +115,12 @@ struct BuildDetailView: View {
                 Button { model.selection = .app(record.appID) } label: {
                     Label("Application", systemImage: "arrow.up.left.square")
                 }
+            }
+            if let run = record.actionsRunURL.flatMap(URL.init(string:)) {
+                Button { NSWorkspace.shared.open(run) } label: {
+                    Label("GitHub Actions", systemImage: "arrow.up.forward.square")
+                }
+                .help("Open this run in GitHub Actions")
             }
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([model.logURL(for: record)])

@@ -84,11 +84,15 @@ struct AppDetailView: View {
             }
             Spacer()
 
+            if app.githubActions.enabled { actionsMenu }
+
             Toggle(isOn: Binding(get: { app.watchTags }, set: { model.setWatching(app.id, $0) })) {
                 Text("Watch")
             }
             .toggleStyle(.switch)
-            .help(app.autoBuild
+            .help(app.deploysThroughActions
+                  ? "Check GitHub every \(app.pollMinutes) min for new tags (GitHub Actions deploys them)"
+                  : app.autoBuild
                   ? "Check GitHub every \(app.pollMinutes) min and deploy new tags"
                   : "Check GitHub every \(app.pollMinutes) min (auto-deploy is off)")
 
@@ -131,6 +135,40 @@ struct AppDetailView: View {
                 .help("Deploy \(latest.name) to \(app.enabledPlatforms.map(\.storeTitle).joined(separator: " and ")) (⌘D)")
             }
         }
+    }
+
+    private var actionsMenu: some View {
+        let state = model.runnerState(for: app.id)
+        return Menu {
+            if app.githubActions.isConnected {
+                Text("Runner \(app.githubActions.runnerName)")
+                if let repo = app.githubRepo {
+                    Button("Open Runs in GitHub") { NSWorkspace.shared.open(repo.actionsURL) }
+                    Button("Open Runner Settings in GitHub") {
+                        NSWorkspace.shared.open(repo.webURL.appendingPathComponent("settings/actions/runners"))
+                    }
+                }
+                Button("Restart Runner") { model.restartRunner(app.id) }
+                Button("Show Runner Log") {
+                    let log = AppPaths.runnerDirectory(for: app.id).appendingPathComponent("_diag/miliship-runner.log")
+                    NSWorkspace.shared.activateFileViewerSelecting([log])
+                }
+                Divider()
+            }
+            Button("GitHub Actions Settings…") { model.beginEdit(app.id, step: .github) }
+        } label: {
+            if app.githubActions.isConnected {
+                RunnerStatusLabel(state: state)
+            } else {
+                Label("Actions not connected", systemImage: "exclamationmark.triangle")
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Color.secondary.opacity(0.1), in: Capsule())
+        .help("GitHub Actions runner")
     }
 
     // MARK: Stats
@@ -371,12 +409,12 @@ struct DeployMenu: View {
         let platforms = app.enabledPlatforms
         Menu(tag.mode == .release ? "Deploy" : "Patch") {
             if platforms.count > 1 {
-                Button("Android + iOS") { model.enqueue(appID: app.id, tag: tag, platforms: platforms, trigger: "manual") }
+                Button("Android + iOS") { model.deploy(appID: app.id, tag: tag, platforms: platforms) }
                 Divider()
             }
             ForEach(platforms) { platform in
                 Button(platforms.count > 1 ? "\(platform.title) only" : platform.title) {
-                    model.enqueue(appID: app.id, tag: tag, platforms: [platform], trigger: "manual")
+                    model.deploy(appID: app.id, tag: tag, platforms: [platform])
                 }
             }
         }

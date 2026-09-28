@@ -14,14 +14,17 @@ struct PreferencesView: View {
     var body: some View {
         Form {
             Section {
+                Toggle("Keep running in the menu bar when the window is closed", isOn: $model.global.runInBackground)
                 Toggle("Open Mili Ship at login", isOn: Binding(get: { launchAtLogin }, set: { setLaunchAtLogin($0) }))
                 if let loginItemError {
                     Text(loginItemError).font(.caption).foregroundStyle(.red)
                 }
             } header: {
-                Text("General")
+                Text("Background")
             } footer: {
-                Text("Keeps watching your repositories from the menu bar after a restart. Closing the window doesn't quit Mili Ship; use the menu bar icon → Quit.")
+                Text(model.global.runInBackground
+                     ? "Closing the window hides Mili Ship from the Dock; it keeps watching tags and running deployments from the menu bar. At login it starts there without opening a window. Quitting (⌘Q or menu bar → Quit) stops watching until you open it again."
+                     : "Closing the window quits Mili Ship, so tags are only watched while the window is open.")
             }
 
             Section {

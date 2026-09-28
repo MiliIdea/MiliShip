@@ -152,6 +152,51 @@ enum IOSSigning: String, Codable, CaseIterable, Identifiable {
 
 // MARK: - Application configuration
 
+/// owner/name of a repository hosted on github.com, parsed from any clone URL form.
+struct GitHubRepo: Hashable {
+    let owner: String
+    let name: String
+
+    var fullName: String { "\(owner)/\(name)" }
+    var webURL: URL { URL(string: "https://github.com/\(owner)/\(name)")! }
+    var actionsURL: URL { webURL.appendingPathComponent("actions") }
+
+    init?(remote: String) {
+        var text = remote.trimmed
+        if text.hasSuffix("/") { text.removeLast() }
+        if text.hasSuffix(".git") { text.removeLast(4) }
+        let path: Substring
+        if let range = text.range(of: "github.com:") {        // git@github.com:owner/name
+            path = text[range.upperBound...]
+        } else if let range = text.range(of: "github.com/") { // https://, ssh://git@github.com/
+            path = text[range.upperBound...]
+        } else {
+            return nil
+        }
+        let parts = path.split(separator: "/")
+        guard parts.count == 2 else { return nil }
+        owner = String(parts[0])
+        name = String(parts[1])
+    }
+}
+
+/// Deployments run as GitHub Actions jobs on a self-hosted runner that Mili Ship installs and manages.
+struct GitHubActionsConfig: Codable, Equatable {
+    var enabled = false
+    /// Set once the runner is registered with GitHub.
+    var runnerName = ""
+    /// Unique label the workflow targets (`runs-on: [self-hosted, <label>]`).
+    var runnerLabel = ""
+    var runnerID: Int?
+    /// Self-hosted runners on public repositories need workflow approval for outside contributors.
+    var repositoryIsPublic = false
+    var workflowFile = "miliship.yml"
+    var timeoutMinutes = 180
+
+    var isConnected: Bool { enabled && !runnerName.isEmpty && !runnerLabel.isEmpty }
+    var workflowPath: String { ".github/workflows/\(workflowFile.trimmed.isEmpty ? "miliship.yml" : workflowFile.trimmed)" }
+}
+
 struct FileInjection: Codable, Identifiable, Hashable {
     var id = UUID()
     /// Local file on this Mac.
@@ -251,11 +296,17 @@ struct AppConfig: Codable, Identifiable, Equatable {
     var pollMinutes = 5
     var autoBuild = true
 
+    // GitHub Actions
+    var githubActions = GitHubActionsConfig()
+
     // Stores
     var android = AndroidConfig()
     var ios = IOSConfig()
 
     var displayName: String { name.trimmed.isEmpty ? "Untitled app" : name.trimmed }
+    var githubRepo: GitHubRepo? { GitHubRepo(remote: repoURL) }
+    /// GitHub triggers deployments for connected apps; Mili Ship's own tag watcher only lists tags then.
+    var deploysThroughActions: Bool { githubActions.isConnected && githubRepo != nil }
 
     var workspaceURL: URL {
         workspacePath.trimmed.isEmpty ? AppPaths.defaultWorkspace(for: self) : expandPath(workspacePath, directory: true)
@@ -325,6 +376,15 @@ struct AppConfig: Codable, Identifiable, Equatable {
         if repoURL.trimmed.isEmpty { warnings.append("Repository URL is missing.") }
         if enabledPlatforms.isEmpty { warnings.append("Enable Android and/or iOS.") }
         if releaseTagPrefix.isEmpty { warnings.append("Release tag prefix is empty.") }
+        if githubActions.enabled {
+            if githubRepo == nil {
+                warnings.append("GitHub Actions: the repository isn't on github.com.")
+            } else if !hasSecret(.githubToken) {
+                warnings.append("GitHub Actions: add a GitHub token.")
+            } else if !githubActions.isConnected {
+                warnings.append("GitHub Actions: connect the runner.")
+            }
+        }
         if usesShorebird && !hasSecret(.shorebirdToken) {
             warnings.append("No Shorebird token: builds rely on `shorebird login` on this Mac.")
         }
@@ -365,6 +425,8 @@ struct AppConfig: Codable, Identifiable, Equatable {
 struct GlobalSettings: Codable, Equatable {
     var extraPATH = ""
     var notifications = true
+    /// Closing the window keeps Mili Ship in the menu bar (no Dock icon) so it goes on watching tags.
+    var runInBackground = true
 }
 
 // MARK: - Tags & versions
@@ -462,6 +524,8 @@ struct BuildRecord: Codable, Identifiable, Hashable {
     var platformStatus: [String: RunStatus]
     var results: [String]
     var failureReason: String?
+    /// The GitHub Actions run this deployment belongs to.
+    var actionsRunURL: String?
 
     init(app: AppConfig, tag: ReleaseTag, platforms: [TargetPlatform], trigger: String) {
         id = UUID()

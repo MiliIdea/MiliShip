@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import UserNotifications
 
@@ -48,7 +49,10 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var apps: [AppConfig]
     @Published var global: GlobalSettings {
-        didSet { if global != oldValue { Persistence.save(global, to: AppPaths.globalFile) } }
+        didSet {
+            BackgroundMode.enabled = global.runInBackground
+            if global != oldValue { Persistence.save(global, to: AppPaths.globalFile) }
+        }
     }
     @Published private(set) var tagsByApp: [UUID: [TagEntry]] = [:]
     @Published private(set) var refreshStates: [UUID: RefreshState] = [:]
@@ -60,6 +64,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var checkingTools = false
 
     let liveLog = LiveLog()
+    let runners = RunnerManager()
+    /// Deploy requests sent to GitHub Actions that haven't reached the runner yet ("<app id>|<tag>").
+    @Published private(set) var pendingDispatches: Set<String> = []
+
+    private var bridge: ActionsBridge?
+    private var runnerObserver: AnyCancellable?
+    private var cancelReasons: [UUID: String] = [:]
 
     private var seen: [String: SeenTags]
     private var storedSecretKeys: [UUID: Set<SecretKey>] = [:]
@@ -71,7 +82,9 @@ final class AppModel: ObservableObject {
 
     init() {
         apps = Persistence.loadApps()
-        global = Persistence.loadMerged(GlobalSettings(), from: AppPaths.globalFile)
+        let settings = Persistence.loadMerged(GlobalSettings(), from: AppPaths.globalFile)
+        global = settings
+        BackgroundMode.enabled = settings.runInBackground
         seen = Persistence.load([String: SeenTags].self, from: AppPaths.seenTagsFile) ?? [:]
 
         var loaded = Persistence.load([BuildRecord].self, from: AppPaths.historyFile) ?? []
@@ -90,6 +103,142 @@ final class AppModel: ObservableObject {
             for id in unwatched { await refreshTags(for: id) }
         }
         processQueue()
+
+        BackgroundMode.busyDescription = { [weak self] in
+            guard let self else { return nil }
+            if let record = self.activeRecord { return "\(record.appName) \(record.tagName) is still deploying." }
+            let queued = self.queuedCount
+            return queued > 0 ? "\(queued) deployment\(queued == 1 ? " is" : "s are") waiting in the queue." : nil
+        }
+        BackgroundMode.willTerminate = { [weak self] in self?.runners.stopAll() }
+
+        runnerObserver = runners.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        bridge = ActionsBridge(model: self)
+        reconcileRunners()
+    }
+
+    // MARK: - GitHub Actions
+
+    func runnerState(for appID: UUID) -> RunnerState { runners.state(for: appID) }
+
+    private func reconcileRunners() {
+        runners.reconcile(apps: apps, environment: Toolchain.environment(global: global))
+    }
+
+    func restartRunner(_ appID: UUID) {
+        guard let app = self.app(appID) else { return }
+        runners.restart(app, environment: Toolchain.environment(global: global))
+    }
+
+    /// Wizard: registers the runner for the draft. `token` falls back to the one in the Keychain.
+    func connectActions(_ draft: AppConfig, token: String?, log: @escaping @Sendable (String) -> Void) async throws -> GitHubActionsConfig {
+        guard let token = token.flatMap({ $0.isEmpty ? nil : $0 }) ?? Keychain.get(.githubToken, app: draft.id) else {
+            throw MiliShipError(message: "Add a GitHub token first.")
+        }
+        let config = try await runners.connect(draft, token: token, environment: Toolchain.environment(global: global), log: log)
+        // Saved apps: keep the stored configuration in step so the runner starts right away.
+        if let index = apps.firstIndex(where: { $0.id == draft.id }) {
+            apps[index].githubActions = config
+            persistApps()
+            reconcileRunners()
+        }
+        return config
+    }
+
+    func disconnectActions(_ draft: AppConfig, token: String?) async -> GitHubActionsConfig {
+        let token = token.flatMap { $0.isEmpty ? nil : $0 } ?? Keychain.get(.githubToken, app: draft.id)
+        await runners.disconnect(draft, token: token, environment: Toolchain.environment(global: global))
+        var config = draft.githubActions
+        config.runnerName = ""
+        config.runnerLabel = ""
+        config.runnerID = nil
+        if let index = apps.firstIndex(where: { $0.id == draft.id }) {
+            apps[index].githubActions = config
+            persistApps()
+        }
+        return config
+    }
+
+    /// Commits the workflow (or opens a pull request) and describes what happened.
+    func installWorkflow(_ draft: AppConfig, token: String?) async throws -> (message: String, url: URL?) {
+        guard let repo = draft.githubRepo else { throw MiliShipError(message: "The repository isn't on github.com.") }
+        guard let token = token.flatMap({ $0.isEmpty ? nil : $0 }) ?? Keychain.get(.githubToken, app: draft.id) else {
+            throw MiliShipError(message: "Add a GitHub token first.")
+        }
+        let client = GitHubClient(token: token, repo: repo)
+        let repository = try await client.repository()
+        let path = draft.githubActions.workflowPath
+        switch try await client.installWorkflow(path: path, content: ActionsWorkflow.yaml(for: draft), defaultBranch: repository.defaultBranch) {
+        case .unchanged:
+            return ("\(path) is already up to date on \(repository.defaultBranch).", repo.webURL.appendingPathComponent("blob/\(repository.defaultBranch)/\(path)"))
+        case .committed(let branch):
+            return ("Committed \(path) to \(branch). Tags created from now on deploy through GitHub Actions.", repo.webURL.appendingPathComponent("blob/\(branch)/\(path)"))
+        case .pullRequest(let url):
+            return ("\(repository.defaultBranch) is protected, so a pull request was opened. Merge it, then tag as usual.", url)
+        }
+    }
+
+    /// Called by the bridge for every job the runner hands over.
+    func acceptActionsJob(_ request: ActionsBridge.Request) -> Result<BuildRecord, MiliShipError> {
+        guard let id = UUID(uuidString: request["app"]), let app = self.app(id) else {
+            return .failure(MiliShipError(message: "This runner belongs to an application that no longer exists in Mili Ship."))
+        }
+        guard request["ref"].hasPrefix("refs/tags/") else {
+            return .failure(MiliShipError(message: "Mili Ship deploys tags. Run the workflow on a tag (Use workflow from → Tags)."))
+        }
+        guard let tag = app.releaseTag(named: request["tag"]) else {
+            var prefixes = [app.releaseTagPrefix]
+            if app.supportsPatches { prefixes.append(app.patchTagPrefix) }
+            return .failure(MiliShipError(message: "\(request["tag"]) doesn't start with \(prefixes.joined(separator: " or ")), so \(app.displayName) doesn't deploy it."))
+        }
+        let requested = request["platforms"]
+        let platforms = app.enabledPlatforms.filter { requested.isEmpty || requested == "all" || $0.rawValue == requested }
+        guard !platforms.isEmpty else {
+            return .failure(MiliShipError(message: "\(requested) isn't enabled for \(app.displayName)."))
+        }
+        pendingDispatches.remove("\(app.id)|\(tag.name)")
+
+        let actor = request["actor"]
+        let trigger = "GitHub Actions" + (actor.isEmpty ? "" : " · \(actor)")
+        let recordID = history.first { $0.appID == app.id && $0.tagName == tag.name && !$0.status.isFinished }?.id
+            ?? enqueue(appID: app.id, tag: tag, platforms: platforms, trigger: trigger, select: false)
+        guard let recordID else { return .failure(MiliShipError(message: "Mili Ship couldn't queue \(tag.name).")) }
+        let runURL = request["run_url"]
+        update(recordID) { if $0.actionsRunURL == nil, !runURL.isEmpty { $0.actionsRunURL = runURL } }
+        guard let record = history.first(where: { $0.id == recordID }) else {
+            return .failure(MiliShipError(message: "Mili Ship couldn't queue \(tag.name)."))
+        }
+        return .success(record)
+    }
+
+    /// Deploys through GitHub Actions for connected apps (so the run shows up there), otherwise locally.
+    func deploy(appID: UUID, tag: ReleaseTag, platforms: [TargetPlatform], trigger: String = "manual") {
+        guard let app = self.app(appID), !platforms.isEmpty, !isBusy(appID: appID, tagName: tag.name) else { return }
+        guard app.deploysThroughActions, runners.state(for: appID).isHealthy,
+              let token = Keychain.get(.githubToken, app: appID), let repo = app.githubRepo
+        else {
+            enqueue(appID: appID, tag: tag, platforms: platforms, trigger: trigger)
+            return
+        }
+        let key = "\(appID)|\(tag.name)"
+        pendingDispatches.insert(key)
+        let inputs = ["platforms": platforms.count == app.enabledPlatforms.count ? "all" : platforms[0].rawValue]
+        let workflow = app.githubActions.workflowFile.trimmed.isEmpty ? "miliship.yml" : app.githubActions.workflowFile.trimmed
+        Task {
+            do {
+                try await GitHubClient(token: token, repo: repo).dispatch(workflowFile: workflow, ref: tag.name, inputs: inputs)
+                // The run reaches the runner within seconds; stop waiting after a minute.
+                try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+                pendingDispatches.remove(key)
+            } catch {
+                pendingDispatches.remove(key)
+                // Typically: the tag predates the workflow file. Build here instead.
+                enqueue(appID: appID, tag: tag, platforms: platforms, trigger: "\(trigger) · ran locally")
+                if let id = history.first(where: { $0.appID == appID && $0.tagName == tag.name })?.id {
+                    update(id) { $0.results.append("Not in GitHub Actions: \(describe(error))") }
+                }
+            }
+        }
     }
 
     // MARK: - Lookups
@@ -144,7 +293,8 @@ final class AppModel: ObservableObject {
     }
 
     func isBusy(appID: UUID, tagName: String) -> Bool {
-        history.contains { $0.appID == appID && $0.tagName == tagName && !$0.status.isFinished }
+        pendingDispatches.contains("\(appID)|\(tagName)")
+            || history.contains { $0.appID == appID && $0.tagName == tagName && !$0.status.isFinished }
     }
 
     func logURL(for record: BuildRecord) -> URL {
@@ -172,6 +322,7 @@ final class AppModel: ObservableObject {
     func wizardStep(for warning: String) -> WizardStep {
         if warning.hasPrefix("Android") || warning.hasPrefix("Google Play") { return .googlePlay }
         if warning.hasPrefix("App Store") { return .appStore }
+        if warning.hasPrefix("GitHub Actions") { return .github }
         if warning.hasPrefix("Repository") { return .repository }
         return .build
     }
@@ -195,7 +346,7 @@ final class AppModel: ObservableObject {
 
     func deployLatest(_ appID: UUID) {
         guard let app = self.app(appID), let tag = latestReleaseTag(for: appID) else { return }
-        enqueue(appID: appID, tag: tag, platforms: app.enabledPlatforms, trigger: "manual")
+        deploy(appID: appID, tag: tag, platforms: app.enabledPlatforms)
     }
 
     func revealWorkspace(_ appID: UUID) {
@@ -264,6 +415,7 @@ final class AppModel: ObservableObject {
             apps.append(app)
         }
         persistApps()
+        reconcileRunners()
         selection = .app(app.id)
         Task { await refreshTags(for: app.id) }
     }
@@ -276,6 +428,11 @@ final class AppModel: ObservableObject {
     }
 
     func removeApp(_ id: UUID) {
+        if let app = self.app(id), app.githubActions.isConnected {
+            let token = Keychain.get(.githubToken, app: id)
+            let environment = Toolchain.environment(global: global)
+            Task { await runners.disconnect(app, token: token, environment: environment) }
+        }
         apps.removeAll { $0.id == id }
         Keychain.removeAll(for: id)
         storedSecretKeys[id] = nil
@@ -375,7 +532,8 @@ final class AppModel: ObservableObject {
 
         guard !fresh.isEmpty, let app = self.app(appID), app.watchTags else { return }
         notify(title: "\(app.displayName): new tag\(fresh.count > 1 ? "s" : "")", body: fresh.map(\.tag.name).joined(separator: ", "))
-        guard app.autoBuild else { return }
+        // Connected apps are deployed by GitHub Actions the moment the tag is pushed.
+        guard app.autoBuild, !app.deploysThroughActions else { return }
         for entry in fresh.reversed() { // oldest first
             enqueue(appID: appID, tag: entry.tag, platforms: app.enabledPlatforms, trigger: "auto")
         }
@@ -402,24 +560,28 @@ final class AppModel: ObservableObject {
 
     // MARK: - Build queue
 
-    func enqueue(appID: UUID, tag: ReleaseTag, platforms: [TargetPlatform], trigger: String) {
-        guard let app = self.app(appID), !platforms.isEmpty, !isBusy(appID: appID, tagName: tag.name) else { return }
+    @discardableResult
+    func enqueue(appID: UUID, tag: ReleaseTag, platforms: [TargetPlatform], trigger: String, select: Bool = true) -> UUID? {
+        let running = history.contains { $0.appID == appID && $0.tagName == tag.name && !$0.status.isFinished }
+        guard let app = self.app(appID), !platforms.isEmpty, !running else { return nil }
         let record = BuildRecord(app: app, tag: tag, platforms: platforms, trigger: trigger)
         history.insert(record, at: 0)
         if history.count > historyLimit { history.removeLast(history.count - historyLimit) }
         persistHistory()
-        if trigger != "auto" { selection = .build(record.id) }
+        if select && trigger != "auto" { selection = .build(record.id) }
         processQueue()
+        return record.id
     }
 
     func retry(_ record: BuildRecord) {
         guard let app = self.app(record.appID), let tag = app.releaseTag(named: record.tagName) else { return }
-        enqueue(appID: app.id, tag: tag, platforms: record.platforms, trigger: "retry")
+        deploy(appID: app.id, tag: tag, platforms: record.platforms, trigger: "retry")
     }
 
-    func cancel(_ id: UUID) {
+    func cancel(_ id: UUID, reason: String = "Cancelled by user") {
+        cancelReasons[id] = reason
         if id == activeBuildID {
-            liveLog.append("\n■ Cancelling…\n")
+            liveLog.append("\n■ Cancelling — \(reason)\n")
             buildTask?.cancel()
             pipeline?.cancel()
             return
@@ -428,6 +590,7 @@ final class AppModel: ObservableObject {
             guard record.status == .queued else { return }
             record.status = .cancelled
             record.finishedAt = Date()
+            record.failureReason = reason
             for key in record.platformStatus.keys { record.platformStatus[key] = .cancelled }
         }
     }
@@ -524,6 +687,8 @@ final class AppModel: ObservableObject {
     }
 
     private func finish(id: UUID, status: RunStatus, reason: String?) {
+        let reason = status == .cancelled ? (cancelReasons[id] ?? reason) : reason
+        cancelReasons[id] = nil
         update(id) { record in
             record.status = status
             record.finishedAt = Date()

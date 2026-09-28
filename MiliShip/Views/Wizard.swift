@@ -13,7 +13,7 @@ struct SecretStore {
 }
 
 enum WizardStep: Int, CaseIterable, Identifiable {
-    case repository, project, prepare, build, googlePlay, appStore, review
+    case repository, project, prepare, build, github, googlePlay, appStore, review
 
     var id: Int { rawValue }
 
@@ -23,6 +23,7 @@ enum WizardStep: Int, CaseIterable, Identifiable {
         case .project: return "Project"
         case .prepare: return "Prepare"
         case .build: return "Build & versioning"
+        case .github: return "GitHub Actions"
         case .googlePlay: return "Google Play"
         case .appStore: return "App Store"
         case .review: return "Review"
@@ -35,6 +36,7 @@ enum WizardStep: Int, CaseIterable, Identifiable {
         case .project: return "App, framework, options"
         case .prepare: return "Secret files & scripts"
         case .build: return "Tool, tags, versions"
+        case .github: return "Runner & workflow"
         case .googlePlay: return "Signing & publishing"
         case .appStore: return "API key, signing, upload"
         case .review: return "Check & save"
@@ -47,6 +49,7 @@ enum WizardStep: Int, CaseIterable, Identifiable {
         case .project: return "Which Flutter or React Native app in the repository to build, and how."
         case .prepare: return "Files and commands a build needs that aren't committed to git."
         case .build: return "How the app is built, which tags trigger a deployment, and how version numbers are chosen."
+        case .github: return "Optional: run deployments as GitHub Actions jobs on this Mac — free, instant, with live logs in GitHub."
         case .googlePlay: return "Sign the Android App Bundle and publish it to a Google Play track."
         case .appStore: return "Sign the iOS build and upload it to App Store Connect / TestFlight."
         case .review: return "Everything at a glance. You can change any of this later."
@@ -59,6 +62,7 @@ enum WizardStep: Int, CaseIterable, Identifiable {
         case .project: return "folder"
         case .prepare: return "wrench.and.screwdriver"
         case .build: return "hammer"
+        case .github: return "arrow.triangle.2.circlepath.circle"
         case .googlePlay: return "play.rectangle"
         case .appStore: return "applelogo"
         case .review: return "checkmark.seal"
@@ -168,6 +172,7 @@ struct AppWizardView: View {
         switch item {
         case .googlePlay: return !draft.android.enabled || stepWarnings(prefix: ["Android", "Google Play"]).isEmpty
         case .appStore: return !draft.ios.enabled || stepWarnings(prefix: ["App Store"]).isEmpty
+        case .github: return !draft.githubActions.enabled || stepWarnings(prefix: ["GitHub Actions"]).isEmpty
         default: return true
         }
     }
@@ -195,6 +200,8 @@ struct AppWizardView: View {
             PrepareStep(draft: $draft)
         case .build:
             BuildStep(draft: $draft, secrets: $secrets)
+        case .github:
+            GitHubActionsStep(draft: $draft, secrets: $secrets)
         case .googlePlay:
             GooglePlayStep(draft: $draft, secrets: $secrets)
         case .appStore:
@@ -621,7 +628,9 @@ private struct BuildStep: View {
                     .disabled(!draft.watchTags)
                 Toggle("Deploy new tags automatically", isOn: $draft.autoBuild)
                     .disabled(!draft.watchTags)
-                Text("Tags that already exist the first time Mili Ship syncs are never deployed automatically.")
+                Text(draft.githubActions.enabled
+                     ? "With GitHub Actions on, GitHub starts deployments the moment a tag is pushed; watching only keeps the tag list fresh."
+                     : "Tags that already exist the first time Mili Ship syncs are never deployed automatically.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -635,7 +644,244 @@ private struct BuildStep: View {
     }
 }
 
-// MARK: - 5 · Google Play
+// MARK: - 5 · GitHub Actions
+
+private struct GitHubActionsStep: View {
+    @EnvironmentObject private var model: AppModel
+    @Binding var draft: AppConfig
+    @Binding var secrets: SecretStore
+
+    @State private var working: String?
+    @State private var progress = ""
+    @State private var result: (ok: Bool, message: String, url: URL?)?
+    @State private var showWorkflow = false
+
+    private var repo: GitHubRepo? { draft.githubRepo }
+    private var token: String? { secrets.new[.githubToken] }
+    private var hasToken: Bool { secrets.has(.githubToken) }
+    private var state: RunnerState { model.runnerState(for: draft.id) }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Run deployments in GitHub Actions", isOn: $draft.githubActions.enabled)
+            } footer: {
+                Text("Mili Ship installs GitHub's official runner on this Mac. A pushed tag starts a GitHub Actions job right away; the job hands the tag to Mili Ship, and the full log streams to the run in GitHub. It runs on your Mac, so it costs no Actions minutes — even for private repositories.")
+            }
+
+            if draft.githubActions.enabled {
+                if let repo {
+                    tokenSection(repo)
+                    runnerSection(repo)
+                    workflowSection(repo)
+                } else {
+                    Section {
+                        Label("GitHub Actions needs a repository on github.com. The Git URL is \(draft.repoURL.isEmpty ? "empty" : draft.repoURL).",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: Sections
+
+    private func tokenSection(_ repo: GitHubRepo) -> some View {
+        Section {
+            SecretField(title: "GitHub token", key: .githubToken, store: $secrets)
+            HStack {
+                Link("Create a fine-grained token…", destination: URL(string: "https://github.com/settings/personal-access-tokens/new")!)
+                Spacer()
+            }
+            DisclosureGroup("Which permissions?") {
+                Text("""
+                Repository access: only \(repo.fullName).
+                Repository permissions, Read and write: Administration (registers the runner), Actions (starts runs), Contents and Workflows (adds the workflow file), Pull requests (only if the default branch is protected).
+                A classic token with the repo and workflow scopes works too.
+                """)
+                .font(.callout)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("Step 1 · Access to \(repo.fullName)")
+        } footer: {
+            Text("Stored in the macOS Keychain. Used to register the runner, add the workflow and start runs from Mili Ship's Deploy buttons.")
+        }
+    }
+
+    private func runnerSection(_ repo: GitHubRepo) -> some View {
+        Section {
+            if draft.githubActions.isConnected {
+                LabeledContent("Runner") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(draft.githubActions.runnerName).font(.system(.body, design: .monospaced)).textSelection(.enabled)
+                        Text("label \(draft.githubActions.runnerLabel)").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if model.app(draft.id) != nil {
+                    LabeledContent("Status") { RunnerStatusLabel(state: state) }
+                } else {
+                    Text("Starts when you add the application.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                Button(draft.githubActions.isConnected ? "Reconnect Runner" : "Connect Runner") { connect() }
+                    .disabled(working != nil || !hasToken)
+                if draft.githubActions.isConnected {
+                    Button("Disconnect", role: .destructive) { disconnect() }
+                        .disabled(working != nil)
+                }
+                if working == "runner" { ProgressView().controlSize(.small) }
+                Spacer()
+            }
+            if working == "runner", !progress.isEmpty {
+                Text(progress).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+            }
+            if draft.githubActions.isConnected && draft.githubActions.repositoryIsPublic {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.shield.fill").foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(repo.fullName) is public. A self-hosted runner runs whatever a workflow asks, so require approval for workflows from outside collaborators.")
+                            .fixedSize(horizontal: false, vertical: true)
+                        Link("Open Actions settings", destination: repo.webURL.appendingPathComponent("settings/actions"))
+                    }
+                }
+                .font(.callout)
+            }
+        } header: {
+            Text("Step 2 · Runner on this Mac")
+        } footer: {
+            Text("Downloads GitHub's runner (about 100 MB, once) into ~/.miliship and registers it for \(repo.fullName) only. It runs while Mili Ship runs — keep \"Keep running in the menu bar\" and \"Open at login\" on. While the Mac sleeps, GitHub keeps new jobs queued for up to 24 hours.")
+        }
+    }
+
+    private func workflowSection(_ repo: GitHubRepo) -> some View {
+        Section {
+            TextField("Workflow file", text: $draft.githubActions.workflowFile, prompt: Text("miliship.yml"))
+            Stepper("Time limit: \(draft.githubActions.timeoutMinutes) min", value: $draft.githubActions.timeoutMinutes, in: 10...360, step: 10)
+            HStack {
+                Button("Add Workflow to Repository") { installWorkflow() }
+                    .disabled(working != nil || !hasToken || !draft.githubActions.isConnected)
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(ActionsWorkflow.yaml(for: draft), forType: .string)
+                }
+                .disabled(!draft.githubActions.isConnected)
+                Button(showWorkflow ? "Hide" : "Preview") { showWorkflow.toggle() }
+                if working == "workflow" { ProgressView().controlSize(.small) }
+                Spacer()
+            }
+            if showWorkflow {
+                ScrollView(.horizontal) {
+                    Text(ActionsWorkflow.yaml(for: draft))
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(8)
+                }
+                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+            }
+            if let result {
+                HStack(alignment: .top) {
+                    Label(result.message, systemImage: result.ok ? "checkmark.circle.fill" : "xmark.octagon.fill")
+                        .foregroundColor(result.ok ? .green : .red)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    if let url = result.url { Link("Open", destination: url) }
+                }
+            }
+        } header: {
+            Text("Step 3 · Workflow")
+        } footer: {
+            Text("Adds \(draft.githubActions.workflowPath): tags matching \(draft.releaseTagPrefix)…\(draft.supportsPatches ? " and \(draft.patchTagPrefix)…" : "") run on this Mac's runner. GitHub reads the workflow from the tagged commit, so it applies to tags created after it's merged; older tags still deploy locally. Update it after changing tag prefixes or platforms.")
+        }
+    }
+
+    // MARK: Actions
+
+    @MainActor
+    private func connect() {
+        working = "runner"
+        progress = ""
+        result = nil
+        let snapshot = draft
+        let token = self.token
+        Task {
+            do {
+                let config = try await model.connectActions(snapshot, token: token) { line in
+                    let text = line.trimmed
+                    guard !text.isEmpty else { return }
+                    Task { @MainActor in progress = text }
+                }
+                draft.githubActions = config
+                result = (true, "Runner connected. Add the workflow next.", nil)
+            } catch {
+                result = (false, describe(error), nil)
+            }
+            working = nil
+        }
+    }
+
+    @MainActor
+    private func disconnect() {
+        working = "runner"
+        let snapshot = draft
+        let token = self.token
+        Task {
+            draft.githubActions = await model.disconnectActions(snapshot, token: token)
+            result = (true, "Runner removed from this Mac and from GitHub.", nil)
+            working = nil
+        }
+    }
+
+    @MainActor
+    private func installWorkflow() {
+        working = "workflow"
+        result = nil
+        let snapshot = draft
+        let token = self.token
+        Task {
+            do {
+                let outcome = try await model.installWorkflow(snapshot, token: token)
+                result = (true, outcome.message, outcome.url)
+            } catch {
+                result = (false, describe(error), nil)
+            }
+            working = nil
+        }
+    }
+}
+
+/// Coloured dot and text for a runner's state.
+struct RunnerStatusLabel: View {
+    let state: RunnerState
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(state.title)
+            if let detail = state.detail {
+                Text("· \(detail)").foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+            }
+        }
+        .help(state.detail ?? state.title)
+    }
+
+    private var color: Color {
+        switch state {
+        case .online: return .green
+        case .busy, .updating, .starting: return .blue
+        case .reconnecting: return .orange
+        case .needsReconnect: return .red
+        case .stopped: return .secondary
+        }
+    }
+}
+
+// MARK: - 6 · Google Play
 
 private struct GooglePlayStep: View {
     @EnvironmentObject private var model: AppModel
@@ -821,7 +1067,7 @@ private struct GooglePlayStep: View {
     }
 }
 
-// MARK: - 6 · App Store
+// MARK: - 7 · App Store
 
 private struct AppStoreStep: View {
     @EnvironmentObject private var model: AppModel
@@ -923,7 +1169,7 @@ private struct AppStoreStep: View {
     }
 }
 
-// MARK: - 7 · Review
+// MARK: - 8 · Review
 
 private struct ReviewStep: View {
     let draft: AppConfig

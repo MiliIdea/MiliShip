@@ -85,17 +85,18 @@ already on the stores.
 <tr>
 <td valign="top">
 
-### Tag-driven, hands-off
-Watch GitHub from the menu bar and deploy new tags automatically, or pick
-any tag and press **Deploy**. Builds run in a queue, one platform failing
-never stops the other.
+### Live in GitHub Actions — for free
+One click installs GitHub's own runner on your Mac. A pushed tag starts a
+GitHub Actions run instantly, with the full log, step by step, and a
+summary — on your hardware, so it costs no Actions minutes.
 
 </td>
 <td valign="top">
 
-### Everything visible
-Live logs with secrets masked, step-by-step progress, a full deployment
-history and notifications when a release lands. Everything stays on your Mac.
+### Runs in the background
+Close the window and Mili Ship keeps going from the menu bar — watching
+tags, running the queue, notifying you when a release lands. Live logs mask
+your secrets, and the full history stays on your Mac.
 
 </td>
 </tr>
@@ -125,6 +126,40 @@ open MiliShip.xcodeproj           # then ⌘R to run
 ./scripts/build_app.sh            # → build/MiliShip.app
 ```
 
+## GitHub Actions
+
+Turn it on in the app's **GitHub Actions** step. Mili Ship then:
+
+1. downloads GitHub's official runner ([actions/runner](https://github.com/actions/runner)) into `~/.miliship`
+   and registers it for that repository only, with its own label;
+2. adds `.github/workflows/miliship.yml` to the repository — as a commit, or as a pull request when the
+   default branch is protected;
+3. starts the runner whenever Mili Ship runs, and keeps it up to date.
+
+From then on:
+
+- **Pushing a tag** starts a run right away. Its single step hands the tag to Mili Ship, which builds and
+  publishes it as usual and streams the log back — every pipeline step as a collapsible group, failures as
+  annotations, and a summary at the end.
+- **Deploy** in Mili Ship starts the workflow too, so manual deployments show up in GitHub as well.
+- **Cancelling** the run in GitHub stops the deployment on your Mac.
+- **If the Mac is asleep or Mili Ship is closed,** GitHub keeps the job queued (up to 24 hours) and it
+  starts as soon as Mili Ship is back.
+
+| Token permission (fine-grained, this repository) | Why |
+|---|---|
+| Administration — read & write | Register the runner |
+| Actions — read & write | Start runs from Mili Ship |
+| Contents and Workflows — read & write | Add the workflow file |
+| Pull requests — read & write | Only if the default branch is protected |
+
+GitHub reads the workflow from the tagged commit, so it applies to tags created after it's merged. Older
+tags still deploy directly in Mili Ship.
+
+> **Public repositories:** a self-hosted runner runs whatever a workflow asks it to. In the repository's
+> *Settings → Actions → General*, require approval for workflows from outside collaborators — or keep
+> Mili Ship's runner on private repositories.
+
 ## What your Mac needs
 
 Mili Ship drives the tools that are already installed on the Mac. It doesn't bundle them.
@@ -144,7 +179,7 @@ Click **Import PATH from my zsh**, then **Check tools**.
 
 ## Adding an application
 
-Click **Add Application** (⌘N). The wizard has seven steps:
+Click **Add Application** (⌘N). The wizard has eight steps:
 
 | Step | What you set up |
 |---|---|
@@ -152,9 +187,10 @@ Click **Add Application** (⌘N). The wizard has seven steps:
 | **2 · Project** | Pick the app that was detected in the repo; the framework is filled in. **Flutter:** the Flutter command (`flutter` / `fvm flutter`), the install command (`flutter pub get` / `melos bootstrap`), and optionally a flavor, `--target`, `--dart-define-from-file` and extra build arguments. **React Native:** the install command (`npm ci`, `yarn`, `pnpm`…), Expo prebuild, CocoaPods, the Gradle task / flavor, and the iOS workspace, scheme and configuration. |
 | **3 · Prepare** | Git-ignored files to copy in (`google-services.json`, `GoogleService-Info.plist`, `.env`, config files). Commands to run before the build (`dart run build_runner build -d`, …). |
 | **4 · Build & versioning** | Flutter or Shorebird (token, allow native/asset diffs, Flutter version); React Native always builds with Gradle + xcodebuild. Tag prefixes, the version strategy, and whether to watch and auto-deploy. |
-| **5 · Google Play** | ① Signing: upload keystore, alias and passwords. ② API access: package name and service account JSON. ③ Release: track, rollout, release notes. ④ Test connection. |
-| **6 · App Store** | ① API key: Key ID, Issuer ID, .p8. ② Bundle ID and team ID. ③ Signing: automatic, or your own ExportOptions.plist. ④ Upload. ⑤ Test connection. |
-| **7 · Review** | A summary, plus a list of anything still missing. You can save now and finish later. |
+| **5 · GitHub Actions** | Optional. A GitHub token, **Connect Runner**, then **Add Workflow to Repository**. See [GitHub Actions](#github-actions). |
+| **6 · Google Play** | ① Signing: upload keystore, alias and passwords. ② API access: package name and service account JSON. ③ Release: track, rollout, release notes. ④ Test connection. |
+| **7 · App Store** | ① API key: Key ID, Issuer ID, .p8. ② Bundle ID and team ID. ③ Signing: automatic, or your own ExportOptions.plist. ④ Upload. ⑤ Test connection. |
+| **8 · Review** | A summary, plus a list of anything still missing. You can save now and finish later. |
 
 Then push a tag:
 

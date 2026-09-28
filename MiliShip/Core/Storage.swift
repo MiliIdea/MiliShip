@@ -16,6 +16,20 @@ enum AppPaths {
 
     static let logs: URL = ensureDirectory(support.appendingPathComponent("logs", isDirectory: true))
 
+    /// GitHub Actions runners and job handoff. Outside Application Support because the runner's
+    /// scripts don't cope with spaces in their path.
+    static let actionsHome: URL = ensureDirectory(
+        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".miliship", isDirectory: true)
+    )
+    static var runnerDistributions: URL { ensureDirectory(actionsHome.appendingPathComponent("runner/dist", isDirectory: true)) }
+    static func runnerDirectory(for appID: UUID) -> URL {
+        actionsHome.appendingPathComponent("runner/apps/\(appID.uuidString)", isDirectory: true)
+    }
+    static var runnersRoot: URL { ensureDirectory(actionsHome.appendingPathComponent("runner/apps", isDirectory: true)) }
+    static var jobs: URL { ensureDirectory(actionsHome.appendingPathComponent("jobs", isDirectory: true)) }
+    static var jobRequests: URL { ensureDirectory(jobs.appendingPathComponent("requests", isDirectory: true)) }
+    static var jobScript: URL { ensureDirectory(actionsHome.appendingPathComponent("bin", isDirectory: true)).appendingPathComponent("miliship-job") }
+
     static var appsFile: URL { support.appendingPathComponent("apps.json") }
     static var historyFile: URL { support.appendingPathComponent("history.json") }
     static var seenTagsFile: URL { support.appendingPathComponent("seen_tags.json") }
@@ -109,6 +123,7 @@ enum SecretKey: String, CaseIterable, Identifiable {
     case shorebirdToken
     case androidKeystorePassword
     case androidKeyPassword
+    case githubToken
 
     var id: String { rawValue }
 
@@ -117,6 +132,7 @@ enum SecretKey: String, CaseIterable, Identifiable {
         case .shorebirdToken: return "Shorebird token"
         case .androidKeystorePassword: return "Keystore password"
         case .androidKeyPassword: return "Key password"
+        case .githubToken: return "GitHub token"
         }
     }
 }
