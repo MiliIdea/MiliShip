@@ -1,6 +1,6 @@
 import { MotionConfig } from 'motion/react'
 import { ActionsSection } from './components/ActionsSection'
-import { Comparison, FAQ, FinalCTA, Footer, ProductShot } from './components/Closing'
+import { Comparison, FAQ, Developer, FinalCTA, Footer, ProductShot } from './components/Closing'
 import { Hero } from './components/Hero'
 import { Nav } from './components/Nav'
 import { Features, HowItWorks, WorksWith } from './components/Sections'
@@ -22,6 +22,7 @@ export default function App() {
         <Comparison />
         <FAQ />
         <FinalCTA />
+        <Developer />
       </main>
       <Footer />
     </MotionConfig>

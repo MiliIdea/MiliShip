@@ -1,4 +1,4 @@
-import { Check, Minus, Plus } from 'lucide-react'
+import { ArrowUpRight, Check, Minus, Plus } from 'lucide-react'
 import { useState } from 'react'
 import { faqs } from '../content'
 import { asset, site } from '../site'
@@ -156,20 +156,63 @@ export function FinalCTA() {
   )
 }
 
+export function Developer() {
+  return (
+    <section id="developer" aria-labelledby="developer-title" className="scroll-mt-20 pb-24 md:pb-32">
+      <div className="container-page">
+        <Reveal>
+          <a
+            href={site.developer.url}
+            className="group mx-auto flex max-w-3xl cursor-pointer flex-col items-center gap-6 rounded-3xl border border-line bg-surface p-7 text-center transition-colors duration-300 hover:border-line-strong hover:bg-raised sm:flex-row sm:text-left md:p-8"
+          >
+            <img
+              src={asset('mili-avatar.webp')}
+              alt="Chibi Mili riding the Batriders bat"
+              width={96}
+              height={96}
+              loading="lazy"
+              className="size-24 shrink-0 rounded-full ring-2 ring-line-strong transition-transform duration-300 group-hover:-rotate-6"
+            />
+            <div className="min-w-0 flex-1">
+              <p className="font-mono text-xs font-medium tracking-[0.2em] text-brand-2 uppercase">Meet the developer</p>
+              <h2 id="developer-title" className="mt-2 text-2xl font-semibold tracking-tight">Hi, I’m Mili</h2>
+              <p className="mt-2 leading-relaxed text-muted">
+                Milad Karimi — mobile & AI engineer and founder of the Batriders studio. I built {site.name}; the rest
+                of my toy box is on mili.today.
+              </p>
+            </div>
+            <span className="inline-flex h-11 shrink-0 items-center gap-2 rounded-xl bg-fg px-5 font-semibold text-bg transition-colors duration-200 group-hover:bg-white">
+              Visit mili.today
+              <ArrowUpRight className="size-4 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" aria-hidden />
+            </span>
+          </a>
+        </Reveal>
+      </div>
+    </section>
+  )
+}
+
 export function Footer() {
   return (
     <footer className="border-t border-line py-10">
       <div className="container-page flex flex-col items-center justify-between gap-5 text-sm text-subtle md:flex-row">
-        <p className="flex items-center gap-2.5">
+        <p className="flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1 text-center md:justify-start md:text-left">
           <img src={asset('icon.png')} alt="" width={20} height={20} loading="lazy" className="size-5" />
-          {site.name} · Mobile CI/CD for Flutter and React Native on macOS
+          <span>{site.name} · Mobile CI/CD for Flutter and React Native on macOS</span>
+          <span>
+            · Made by{' '}
+            <a href={site.developer.url} className="font-medium text-muted transition-colors hover:text-fg">
+              {site.developer.name}
+            </a>
+          </span>
         </p>
-        <nav aria-label="Footer" className="flex items-center gap-6">
+        <nav aria-label="Footer" className="flex flex-wrap items-center justify-center gap-x-6">
           <a href={site.repo} className="inline-flex cursor-pointer items-center gap-2 py-2.5 transition-colors hover:text-fg">
             <GitHubMark className="size-4" /> GitHub
           </a>
           <a href={`${site.repo}/releases`} className="inline-block cursor-pointer py-2.5 transition-colors hover:text-fg">Releases</a>
           <a href={`${site.repo}/blob/main/LICENSE`} className="inline-block cursor-pointer py-2.5 transition-colors hover:text-fg">MIT License</a>
+          <a href={site.developer.url} className="inline-block cursor-pointer py-2.5 transition-colors hover:text-fg">Developer</a>
         </nav>
       </div>
     </footer>

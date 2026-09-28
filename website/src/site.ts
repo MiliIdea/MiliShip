@@ -9,6 +9,7 @@ export const site = {
   /** Set once Mili Ship is listed; the official Mac App Store badge then appears next to Download. */
   appStoreURL: '',
   minimumMacOS: 'macOS 13',
+  developer: { name: 'Milad Karimi', url: 'https://mili.today/' },
 } as const
 
 export const asset = (path: string) => `${import.meta.env.BASE_URL}${path}`

@@ -23,7 +23,7 @@ const structuredData = [
     license: 'https://opensource.org/licenses/MIT',
     isAccessibleForFree: true,
     offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
-    author: { '@type': 'Organization', name: 'MiliIdea', url: 'https://github.com/MiliIdea' },
+    author: { '@type': 'Person', name: 'Milad Karimi', url: 'https://mili.today/', sameAs: ['https://github.com/MiliIdea'] },
     sameAs: [server.site.repo],
   },
   {
