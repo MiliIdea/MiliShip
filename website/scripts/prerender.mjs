@@ -9,6 +9,14 @@ const htmlPath = `${root}dist/index.html`
 
 const appHtml = server.render()
 const structuredData = [
+  // Tells Google the site's own name, so results show "Mili Ship" rather than the parent domain.
+  {
+    '@context': 'https://schema.org',
+    '@type': 'WebSite',
+    name: 'Mili Ship',
+    alternateName: ['MiliShip', 'Mili Ship by Milad Karimi'],
+    url: server.site.url,
+  },
   {
     '@context': 'https://schema.org',
     '@type': 'SoftwareApplication',
