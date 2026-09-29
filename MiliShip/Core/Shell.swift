@@ -199,8 +199,13 @@ enum Toolchain {
             "/opt/homebrew/sbin",
             "/usr/local/bin",
         ]
+        for (key, value) in global.extraEnvironment where key != "PATH" && !value.trimmed.isEmpty {
+            env[key] = (value.trimmed as NSString).expandingTildeInPath
+        }
+        // Globally activated Dart tools (melos, flutterfire…) live in $PUB_CACHE/bin.
+        let pubCacheBin = env["PUB_CACHE"].map { ["\($0)/bin"] } ?? []
         let system = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
-        env["PATH"] = (custom + common + [system]).joined(separator: ":")
+        env["PATH"] = (custom + pubCacheBin + common + [system]).joined(separator: ":")
 
         env["LANG"] = "en_US.UTF-8"
         env["LC_ALL"] = "en_US.UTF-8"

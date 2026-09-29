@@ -208,7 +208,7 @@ struct AppWizardView: View {
         case .appStore:
             AppStoreStep(draft: $draft, exportOptionsSuggestions: selectedProject?.exportOptionsFiles ?? [])
         case .review:
-            ReviewStep(draft: draft, warnings: warnings) { step = $0 }
+            ReviewStep(draft: $draft, secrets: $secrets, warnings: warnings, runCheck: request.runCheck) { step = $0 }
         }
     }
 
@@ -589,8 +589,10 @@ private struct BuildStep: View {
                     Text(draft.buildTool.detail).font(.caption).foregroundStyle(.secondary)
 
                     if draft.buildTool == .shorebird {
-                        SecretField(title: "Shorebird token", key: .shorebirdToken, store: $secrets,
-                                    help: "Create one with “shorebird login:ci”. Optional if this Mac is logged in with “shorebird login”.")
+                        SecretField(title: "Shorebird API key", key: .shorebirdToken, store: $secrets,
+                                    help: "An API key (sb_api_…) from the Shorebird account that owns this app. Each app can use a different Shorebird account. Without one, builds use this Mac's “shorebird login”.")
+                        Link("Create an API key in Shorebird Console…", destination: URL(string: "https://console.shorebird.dev")!)
+                            .font(.callout)
                         Toggle("Allow native code changes in patches (--allow-native-diffs)", isOn: $draft.shorebird.allowNativeDiffs)
                         Toggle("Allow asset changes in patches (--allow-asset-diffs)", isOn: $draft.shorebird.allowAssetDiffs)
                         TextField("Flutter version for releases", text: $draft.shorebird.flutterVersion, prompt: Text("Shorebird default"))
@@ -1205,12 +1207,15 @@ private struct AppStoreStep: View {
 // MARK: - 8 · Review
 
 private struct ReviewStep: View {
-    let draft: AppConfig
+    @Binding var draft: AppConfig
+    @Binding var secrets: SecretStore
     let warnings: [String]
+    var runCheck = false
     let onEdit: (WizardStep) -> Void
 
     var body: some View {
         Form {
+            PreflightSection(draft: $draft, secrets: $secrets, autoRun: runCheck, onEdit: onEdit)
             Section {
                 if warnings.isEmpty {
                     Label("Everything needed for a deployment is configured.", systemImage: "checkmark.seal.fill")
@@ -1230,6 +1235,172 @@ private struct ReviewStep: View {
             AppSummarySections(app: draft, onEdit: onEdit)
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Runs `ProjectDoctor` on Mili Ship's clone and lists the problems a build would hit, with fixes.
+private struct PreflightSection: View {
+    @EnvironmentObject private var model: AppModel
+    @Binding var draft: AppConfig
+    @Binding var secrets: SecretStore
+    let autoRun: Bool
+    let onEdit: (WizardStep) -> Void
+
+    @State private var findings: [DoctorFinding]?
+    @State private var running = false
+    @State private var progress = ""
+    @State private var fixed: Set<UUID> = []
+    @State private var fixMessage: [UUID: String] = [:]
+    @State private var didAutoRun = false
+
+    private var problems: Int { findings?.filter { $0.severity != .ok && !fixed.contains($0.id) }.count ?? 0 }
+
+    var body: some View {
+        Section {
+            HStack(spacing: 10) {
+                Button(running ? "Checking…" : (findings == nil ? "Check Project" : "Check Again")) { run() }
+                    .disabled(running || draft.repoURL.trimmed.isEmpty)
+                if running {
+                    ProgressView().controlSize(.small)
+                    Text(progress).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                } else if let findings {
+                    Label(problems == 0 ? "Ready to deploy" : "\(problems) problem\(problems == 1 ? "" : "s") to fix",
+                          systemImage: problems == 0 ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(problems == 0 ? .green : .orange)
+                    if !fixed.isEmpty {
+                        Text("· \(fixed.count) fixed — save to keep").font(.callout).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    Text("\(findings.filter { $0.severity == .ok }.count) passed").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            if let findings {
+                ForEach(findings) { finding in row(finding) }
+            }
+        } header: {
+            Text("Pre-flight check")
+        } footer: {
+            Text("Builds the way a deployment would see it: Mili Ship's own clone of the default branch, the build environment and your saved secrets. Run it before you tag a release.")
+        }
+        .task {
+            guard autoRun, !didAutoRun else { return }
+            didAutoRun = true
+            run()
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ finding: DoctorFinding) -> some View {
+        let done = fixed.contains(finding.id)
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: done ? "checkmark.circle.fill" : icon(finding.severity))
+                .foregroundStyle(done ? .green : color(finding.severity))
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(finding.area.rawValue).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(finding.title).font(.callout.weight(finding.severity == .ok ? .regular : .medium))
+                }
+                if let detail = finding.detail, finding.severity != .ok {
+                    Text(detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let message = fixMessage[finding.id] {
+                    Text(message).font(.caption).foregroundStyle(done ? .green : .red).textSelection(.enabled)
+                }
+            }
+            Spacer(minLength: 8)
+            if let fix = finding.fix, let title = finding.fixTitle, finding.severity != .ok, !done {
+                Button(title) { apply(fix, to: finding) }
+                    .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func icon(_ severity: DoctorFinding.Severity) -> String {
+        switch severity {
+        case .error: return "xmark.octagon.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .ok: return "checkmark.circle"
+        }
+    }
+
+    private func color(_ severity: DoctorFinding.Severity) -> Color {
+        switch severity {
+        case .error: return .red
+        case .warning: return .orange
+        case .ok: return .green
+        }
+    }
+
+    private func step(for place: DoctorFinding.Place) -> WizardStep {
+        switch place {
+        case .project: return .project
+        case .prepare: return .prepare
+        case .build: return .build
+        case .github: return .github
+        case .googlePlay: return .googlePlay
+        case .appStore: return .appStore
+        }
+    }
+
+    @MainActor
+    private func run() {
+        running = true
+        fixed = []
+        fixMessage = [:]
+        progress = "Starting…"
+        let snapshot = draft
+        let unsaved = secrets.new.filter { !$0.value.isEmpty }
+        Task {
+            findings = await model.checkProject(snapshot, unsaved: unsaved) { text in
+                Task { @MainActor in progress = text }
+            }
+            running = false
+        }
+    }
+
+    @MainActor
+    private func apply(_ fix: DoctorFinding.Fix, to finding: DoctorFinding) {
+        switch fix {
+        case .addPreBuildCommand(let command):
+            let current = draft.preBuildCommands.trimmingCharacters(in: .newlines)
+            draft.preBuildCommands = current.isEmpty ? command : current + "\n" + command
+            fixed.insert(finding.id)
+            fixMessage[finding.id] = "Added to Prepare → Pre-build commands."
+        case .setDartDefinesFile(let path):
+            draft.dartDefineFile = path
+            fixed.insert(finding.id)
+            fixMessage[finding.id] = "Dart defines file set to \(path)."
+        case .addToPATH, .setEnvironment:
+            model.applyGlobalFix(fix)
+            fixed.insert(finding.id)
+            fixMessage[finding.id] = "Saved in Settings for every build."
+        case .addWorkflow:
+            let snapshot = draft
+            let token = secrets.new[.githubToken]
+            fixMessage[finding.id] = "Adding the workflow…"
+            Task {
+                do {
+                    let outcome = try await model.installWorkflow(snapshot, token: token)
+                    fixed.insert(finding.id)
+                    fixMessage[finding.id] = outcome.message
+                } catch {
+                    fixMessage[finding.id] = describe(error)
+                }
+            }
+        case .copy(let text):
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            fixMessage[finding.id] = "Copied. This one needs a change in the repository — commit it, then check again."
+        case .open(let url, let then):
+            NSWorkspace.shared.open(url)
+            if let then { onEdit(step(for: then)) }
+        case .edit(let place):
+            onEdit(step(for: place))
+        }
     }
 }
 

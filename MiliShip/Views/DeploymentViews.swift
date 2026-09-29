@@ -272,15 +272,19 @@ struct LogView: View {
                         message: log.lines.isEmpty ? "Output appears here as soon as the deployment starts." : "Change the filter or the search text."
                     )
                 } else {
+                    // A scroll view centers content narrower than itself, and a lazy stack is only as wide as
+                    // the lines loaded so far: keep it at least as wide as the pane and pinned to the left.
+                    GeometryReader { geometry in
                     ScrollViewReader { proxy in
                         ScrollView([.vertical, .horizontal]) {
                             LazyVStack(alignment: .leading, spacing: 0) {
                                 ForEach(lines) { line in
-                                    LogLineView(line: line, fontSize: fontSize, highlight: search.trimmed)
+                                    LogLineView(line: line, fontSize: fontSize, highlight: search.trimmed, minWidth: geometry.size.width)
                                         .id(line.id)
                                 }
                             }
                             .padding(.vertical, 6)
+                            .frame(minWidth: geometry.size.width, alignment: .leading)
                         }
                         .onChange(of: log.lines.last?.id) { lastID in
                             guard follow, filter == .all, search.isEmpty, let lastID else { return }
@@ -289,6 +293,7 @@ struct LogView: View {
                         .onAppear {
                             if let last = lines.last?.id { proxy.scrollTo(last, anchor: .bottom) }
                         }
+                    }
                     }
                 }
             }
@@ -367,6 +372,8 @@ private struct LogLineView: View {
     let line: LiveLog.Line
     let fontSize: Double
     let highlight: String
+    /// The pane's width, so short lines and their step/error highlight still span it.
+    var minWidth: CGFloat = 0
 
     var body: some View {
         let kind = LogLineKind(line.text)
@@ -384,6 +391,7 @@ private struct LogLineView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, kind == .step ? 3 : 0)
+        .frame(minWidth: minWidth, alignment: .leading)
         .background(background(kind))
     }
 

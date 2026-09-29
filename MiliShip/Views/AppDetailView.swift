@@ -111,6 +111,8 @@ struct AppDetailView: View {
 
             Menu {
                 Button("Show Clone in Finder") { model.revealWorkspace(app.id) }
+                Button("Check Project…") { model.beginCheck(app.id) }
+                Divider()
                 Button("Open in Terminal") { model.openInTerminal(app.id) }
                 if let url = repositoryWebURL(app.repoURL) {
                     Button("Open Repository in Browser") { NSWorkspace.shared.open(url) }

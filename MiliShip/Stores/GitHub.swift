@@ -103,6 +103,11 @@ struct GitHubClient: Sendable {
         }
     }
 
+    /// Contents of a file on a branch, or nil when it doesn't exist.
+    func fileContent(path: String, ref: String) async throws -> String? {
+        try await file(path: path, ref: ref)?.content
+    }
+
     private func file(path: String, ref: String) async throws -> (sha: String, content: String)? {
         do {
             let json = try await call("GET", "\(base)/contents/\(path)?ref=\(escape(ref))")

@@ -386,7 +386,7 @@ struct AppConfig: Codable, Identifiable, Equatable {
             }
         }
         if usesShorebird && !hasSecret(.shorebirdToken) {
-            warnings.append("No Shorebird token: builds rely on `shorebird login` on this Mac.")
+            warnings.append("No Shorebird API key: builds use this Mac's Shorebird login, which may be another account.")
         }
         if android.enabled {
             if android.writesKeyProperties {
@@ -427,6 +427,8 @@ struct GlobalSettings: Codable, Equatable {
     var notifications = true
     /// Closing the window keeps Mili Ship in the menu bar (no Dock icon) so it goes on watching tags.
     var runInBackground = true
+    /// Variables every build gets, e.g. PUB_CACHE or GRADLE_USER_HOME set in ~/.zshrc (which builds don't read).
+    var extraEnvironment: [String: String] = [:]
 }
 
 // MARK: - Tags & versions

@@ -23,6 +23,8 @@ final class AppModel: ObservableObject {
         let app: AppConfig
         let isNew: Bool
         var step: WizardStep = .repository
+        /// Open on the Review step and run the pre-flight check right away.
+        var runCheck = false
     }
 
     struct ToolStatus: Identifiable, Hashable {
@@ -71,6 +73,8 @@ final class AppModel: ObservableObject {
     private var bridge: ActionsBridge?
     private var runnerObserver: AnyCancellable?
     private var cancelReasons: [UUID: String] = [:]
+    private var appsFileDate: Date?
+    private var fileWatch: Timer?
 
     private var seen: [String: SeenTags]
     private var storedSecretKeys: [UUID: (stored: Set<SecretKey>, blocked: [SecretKey], checked: Date)] = [:]
@@ -82,6 +86,7 @@ final class AppModel: ObservableObject {
 
     init() {
         apps = Persistence.loadApps()
+        appsFileDate = Self.modificationDate(AppPaths.appsFile)
         let settings = Persistence.loadMerged(GlobalSettings(), from: AppPaths.globalFile)
         global = settings
         BackgroundMode.enabled = settings.runInBackground
@@ -113,6 +118,9 @@ final class AppModel: ObservableObject {
         BackgroundMode.willTerminate = { [weak self] in self?.runners.stopAll() }
 
         runnerObserver = runners.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        fileWatch = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reloadAppsIfChangedOnDisk() }
+        }
         bridge = ActionsBridge(model: self)
         reconcileRunners()
     }
@@ -361,6 +369,31 @@ final class AppModel: ObservableObject {
         return failed.isEmpty ? nil : "Still can't read: \(failed.map(\.title).joined(separator: ", ")). Enter them again in Configure."
     }
 
+    /// Pre-flight check of the wizard's draft; `unsaved` are secrets typed in the wizard but not saved yet.
+    func checkProject(_ draft: AppConfig, unsaved: [SecretKey: String], progress: @escaping @Sendable (String) -> Void) async -> [DoctorFinding] {
+        var secrets = Keychain.all(for: draft.id)
+        for (key, value) in unsaved where !value.isEmpty { secrets[key] = value }
+        let githubToken = draft.githubActions.isConnected
+            ? try? await workingGitHubToken(for: draft, typed: unsaved[.githubToken]).token : nil
+        let doctor = ProjectDoctor(app: draft, secrets: secrets, global: global, githubToken: githubToken)
+        return await Task.detached { await doctor.run(progress: progress) }.value
+    }
+
+    /// The fixes that change Mili Ship-wide settings (the rest edit the wizard's draft).
+    func applyGlobalFix(_ fix: DoctorFinding.Fix) {
+        switch fix {
+        case .addToPATH(let folder):
+            let entries = global.extraPATH.split(whereSeparator: { $0 == ":" || $0.isNewline }).map { String($0).trimmed }
+            if !entries.contains(folder) {
+                global.extraPATH = (entries.filter { !$0.isEmpty } + [folder]).joined(separator: "\n")
+            }
+        case .setEnvironment(let key, let value):
+            global.extraEnvironment[key] = value
+        default:
+            break
+        }
+    }
+
     /// The token of the GitHub CLI (`gh`) this Mac is signed in to, and the account it belongs to.
     func githubCLIToken() async throws -> (token: String, login: String) {
         let env = Toolchain.environment(global: global)
@@ -388,6 +421,11 @@ final class AppModel: ObservableObject {
     func beginEdit(_ id: UUID, step: WizardStep = .repository) {
         guard let app = self.app(id) else { return }
         wizard = WizardRequest(app: app, isNew: false, step: step)
+    }
+
+    func beginCheck(_ id: UUID) {
+        guard let app = self.app(id) else { return }
+        wizard = WizardRequest(app: app, isNew: false, step: .review, runCheck: true)
     }
 
     /// The wizard step where a setup warning can be fixed.
@@ -800,7 +838,26 @@ final class AppModel: ObservableObject {
     }
 
     private func persistHistory() { Persistence.save(history, to: AppPaths.historyFile) }
-    private func persistApps() { Persistence.save(apps, to: AppPaths.appsFile) }
+    private func persistApps() {
+        Persistence.save(apps, to: AppPaths.appsFile)
+        appsFileDate = Self.modificationDate(AppPaths.appsFile)
+    }
+
+    private static func modificationDate(_ url: URL) -> Date? {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+    }
+
+    /// apps.json changed on disk without us (edited by hand, restored from a backup…): load it instead of
+    /// overwriting it with the copy in memory on the next save. Waits while the wizard is open.
+    private func reloadAppsIfChangedOnDisk() {
+        guard wizard == nil, let date = Self.modificationDate(AppPaths.appsFile), date != appsFileDate else { return }
+        appsFileDate = date
+        let loaded = Persistence.loadApps()
+        guard loaded != apps else { return }
+        apps = loaded
+        storedSecretKeys = [:]
+        reconcileRunners()
+    }
 
     // MARK: - Toolchain helpers
 

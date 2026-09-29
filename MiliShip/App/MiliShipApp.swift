@@ -97,6 +97,20 @@ struct MiliShipApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
+    /// One Mili Ship at a time: two copies would each save their own copy of the apps (erasing each other's
+    /// edits), fight over the GitHub Actions runners and pick up the same jobs. A second copy — say the
+    /// release build next to the one from Xcode — hands over to the running one and quits before it loads
+    /// anything.
+    init() {
+        let me = ProcessInfo.processInfo.processIdentifier
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "com.mili.MiliShip")
+            .filter { $0.processIdentifier != me && !$0.isTerminated }
+        if let running = others.first {
+            running.activate()
+            exit(0)
+        }
+    }
+
     var body: some Scene {
         WindowGroup("Mili Ship", id: "main") {
             ContentView()

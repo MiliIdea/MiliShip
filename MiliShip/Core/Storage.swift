@@ -129,7 +129,7 @@ enum SecretKey: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .shorebirdToken: return "Shorebird token"
+        case .shorebirdToken: return "Shorebird API key"
         case .androidKeystorePassword: return "Keystore password"
         case .androidKeyPassword: return "Key password"
         case .githubToken: return "GitHub token"
