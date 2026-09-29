@@ -73,7 +73,7 @@ final class AppModel: ObservableObject {
     private var cancelReasons: [UUID: String] = [:]
 
     private var seen: [String: SeenTags]
-    private var storedSecretKeys: [UUID: Set<SecretKey>] = [:]
+    private var storedSecretKeys: [UUID: (stored: Set<SecretKey>, blocked: [SecretKey], checked: Date)] = [:]
     private var pollTask: Task<Void, Never>?
     private var buildTask: Task<Void, Never>?
     private var pipeline: BuildPipeline?
@@ -131,18 +131,47 @@ final class AppModel: ObservableObject {
     }
 
     /// Wizard: registers the runner for the draft. `token` falls back to the one in the Keychain.
-    func connectActions(_ draft: AppConfig, token: String?, log: @escaping @Sendable (String) -> Void) async throws -> GitHubActionsConfig {
-        guard let token = token.flatMap({ $0.isEmpty ? nil : $0 }) ?? Keychain.get(.githubToken, app: draft.id) else {
-            throw MiliShipError(message: "Add a GitHub token first.")
+    /// Tries the token typed in the wizard, then the saved one, then the GitHub CLI login, and returns the first
+    /// that can see the repository. Fine-grained tokens often can't see organization repositories (404).
+    func workingGitHubToken(for draft: AppConfig, typed: String?, log: @escaping @Sendable (String) -> Void = { _ in }) async throws -> (token: String, source: String) {
+        guard let repo = draft.githubRepo else { throw MiliShipError(message: "The repository isn't on github.com.") }
+        var candidates: [(token: String, source: String)] = []
+        if let typed = typed?.trimmed, !typed.isEmpty { candidates.append((typed, "the token you entered")) }
+        if let saved = Keychain.get(.githubToken, app: draft.id), !saved.isEmpty { candidates.append((saved, "the saved token")) }
+        if let cli = try? await githubCLIToken() {
+            candidates.append((cli.token, cli.login.isEmpty ? "your GitHub CLI login" : "your GitHub CLI login (@\(cli.login))"))
         }
-        let config = try await runners.connect(draft, token: token, environment: Toolchain.environment(global: global), log: log)
-        // Saved apps: keep the stored configuration in step so the runner starts right away.
+        var seen = Set<String>()
+        candidates = candidates.filter { seen.insert($0.token).inserted }
+        guard !candidates.isEmpty else {
+            throw MiliShipError(message: "No GitHub token. Paste one, or sign in to the GitHub CLI with “gh auth login” and try again.")
+        }
+        var refused: [String] = []
+        for candidate in candidates {
+            do {
+                _ = try await GitHubClient(token: candidate.token, repo: repo).repository()
+                if !refused.isEmpty { log("Using \(candidate.source)\n") }
+                return candidate
+            } catch let error as GitHubClient.APIError where [401, 403, 404].contains(error.status) {
+                refused.append(candidate.source)
+                log("\(candidate.source.prefix(1).uppercased() + candidate.source.dropFirst()) can't access \(repo.fullName); trying the next one…\n")
+            }
+        }
+        throw MiliShipError(message: "None of the available tokens can access \(repo.fullName) (tried \(refused.joined(separator: ", "))). Fine-grained tokens need the organization as their owner; the GitHub CLI login (“gh auth login”) usually works.")
+    }
+
+    func connectActions(_ draft: AppConfig, token: String?, log: @escaping @Sendable (String) -> Void) async throws -> (config: GitHubActionsConfig, token: String) {
+        let credential = try await workingGitHubToken(for: draft, typed: token, log: log)
+        let config = try await runners.connect(draft, token: credential.token, environment: Toolchain.environment(global: global), log: log)
+        // Saved apps: keep the stored configuration and token in step so the runner starts right away.
         if let index = apps.firstIndex(where: { $0.id == draft.id }) {
             apps[index].githubActions = config
+            Keychain.set(credential.token, for: .githubToken, app: draft.id)
+            storedSecretKeys[draft.id] = nil
             persistApps()
             reconcileRunners()
         }
-        return config
+        return (config, credential.token)
     }
 
     func disconnectActions(_ draft: AppConfig, token: String?) async -> GitHubActionsConfig {
@@ -162,10 +191,7 @@ final class AppModel: ObservableObject {
     /// Commits the workflow (or opens a pull request) and describes what happened.
     func installWorkflow(_ draft: AppConfig, token: String?) async throws -> (message: String, url: URL?) {
         guard let repo = draft.githubRepo else { throw MiliShipError(message: "The repository isn't on github.com.") }
-        guard let token = token.flatMap({ $0.isEmpty ? nil : $0 }) ?? Keychain.get(.githubToken, app: draft.id) else {
-            throw MiliShipError(message: "Add a GitHub token first.")
-        }
-        let client = GitHubClient(token: token, repo: repo)
+        let client = GitHubClient(token: try await workingGitHubToken(for: draft, typed: token).token, repo: repo)
         let repository = try await client.repository()
         let path = draft.githubActions.workflowPath
         switch try await client.installWorkflow(path: path, content: ActionsWorkflow.yaml(for: draft), defaultBranch: repository.defaultBranch) {
@@ -301,10 +327,56 @@ final class AppModel: ObservableObject {
         AppPaths.logs.appendingPathComponent(record.logFileName)
     }
 
+    /// Keychain lookups are cached briefly: views ask on every render, but a stale "missing" must not stick.
     func warnings(for app: AppConfig) -> [String] {
-        let stored = storedSecretKeys[app.id] ?? Set(Keychain.all(for: app.id).keys)
-        storedSecretKeys[app.id] = stored
-        return app.setupWarnings { stored.contains($0) }
+        let state: (stored: Set<SecretKey>, blocked: [SecretKey])
+        if let cached = storedSecretKeys[app.id], Date().timeIntervalSince(cached.checked) < 15 {
+            state = (cached.stored, cached.blocked)
+        } else {
+            var stored: Set<SecretKey> = []
+            var blocked: [SecretKey] = []
+            for key in SecretKey.allCases {
+                switch Keychain.availability(key, app: app.id) {
+                case .readable: stored.insert(key)
+                case .blocked: stored.insert(key); blocked.append(key)
+                case .missing: break
+                }
+            }
+            storedSecretKeys[app.id] = (stored, blocked, Date())
+            state = (stored, blocked)
+        }
+        var warnings = app.setupWarnings { state.stored.contains($0) }
+        if !state.blocked.isEmpty {
+            let names = state.blocked.map { $0.title.lowercased() }.joined(separator: ", ")
+            warnings.insert("Keychain: Mili Ship needs your permission to read the saved \(names).", at: 0)
+        }
+        return warnings
+    }
+
+    /// Asks macOS once for access to secrets saved by another tool or build, then re-saves them as this app.
+    func repairKeychain(for appID: UUID) -> String? {
+        let failed = Keychain.repair(app: appID)
+        storedSecretKeys[appID] = nil
+        objectWillChange.send()
+        return failed.isEmpty ? nil : "Still can't read: \(failed.map(\.title).joined(separator: ", ")). Enter them again in Configure."
+    }
+
+    /// The token of the GitHub CLI (`gh`) this Mac is signed in to, and the account it belongs to.
+    func githubCLIToken() async throws -> (token: String, login: String) {
+        let env = Toolchain.environment(global: global)
+        return try await Task.detached { () async throws -> (String, String) in
+            let shell = ShellRunner()
+            let home = URL(fileURLWithPath: NSHomeDirectory())
+            let token: String
+            do {
+                token = try await shell.run("gh auth token", cwd: home, env: env, log: { _ in }).trimmed
+            } catch {
+                throw MiliShipError(message: "The GitHub CLI isn't signed in. Run “gh auth login” in Terminal (or install it with “brew install gh”), then try again.")
+            }
+            guard !token.isEmpty, !token.contains(" ") else { throw MiliShipError(message: "The GitHub CLI didn't return a token.") }
+            let login = (try? await shell.run("gh api user --jq .login", cwd: home, env: env, log: { _ in }).trimmed) ?? ""
+            return (token, login)
+        }.value
     }
 
     // MARK: - Applications

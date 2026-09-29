@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 — 2026-09-29
+
+- GitHub Actions setup without creating a token: **Use GitHub CLI Login** fills in the token of the GitHub CLI you're signed in to, and **Connect Runner** tries the typed token, the saved one and the GitHub CLI login in turn, keeping whichever can access the repository. Fine-grained tokens that can't see an organization's repository no longer stop the setup.
+- Keychain: Mili Ship tells secrets that are missing apart from ones it isn't allowed to read yet, and offers **Allow Access…** — approve once and it saves them again itself, so they never prompt again.
+- Fixed secrets showing as "not saved" after a failed Keychain read until the app was saved again; the check is now refreshed every few seconds.
+- Opening an app's configuration never triggers a Keychain prompt.
+
 ## 0.1.0 — 2026-09-28
 
 First public version.

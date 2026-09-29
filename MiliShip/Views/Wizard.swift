@@ -88,7 +88,8 @@ struct AppWizardView: View {
         self.request = request
         _draft = State(initialValue: request.app)
         var store = SecretStore()
-        if !request.isNew { store.stored = Set(Keychain.all(for: request.app.id).keys) }
+        // Only checks which secrets exist, so opening the wizard never triggers a Keychain prompt.
+        if !request.isNew { store.stored = Set(SecretKey.allCases.filter { Keychain.availability($0, app: request.app.id) != .missing }) }
         _secrets = State(initialValue: store)
         _step = State(initialValue: request.step)
         _visited = State(initialValue: request.isNew ? [request.step] : Set(WizardStep.allCases))
@@ -655,6 +656,7 @@ private struct GitHubActionsStep: View {
     @State private var progress = ""
     @State private var result: (ok: Bool, message: String, url: URL?)?
     @State private var showWorkflow = false
+    @State private var cliAccount: String?
 
     private var repo: GitHubRepo? { draft.githubRepo }
     private var token: String? { secrets.new[.githubToken] }
@@ -691,9 +693,18 @@ private struct GitHubActionsStep: View {
     private func tokenSection(_ repo: GitHubRepo) -> some View {
         Section {
             SecretField(title: "GitHub token", key: .githubToken, store: $secrets)
-            HStack {
+            HStack(spacing: 14) {
+                Button(working == "gh" ? "Reading…" : "Use GitHub CLI Login") { useGitHubCLI() }
+                    .disabled(working != nil)
+                    .help("Uses the token of the GitHub CLI (gh) you're signed in to on this Mac")
+                if working == "gh" { ProgressView().controlSize(.small) }
                 Link("Create a fine-grained token…", destination: URL(string: "https://github.com/settings/personal-access-tokens/new")!)
                 Spacer()
+            }
+            if let cliAccount {
+                Label("Using the GitHub CLI token of @\(cliAccount). Save to keep it in the Keychain.", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(.callout)
             }
             DisclosureGroup("Which permissions?") {
                 Text("""
@@ -729,7 +740,7 @@ private struct GitHubActionsStep: View {
             }
             HStack {
                 Button(draft.githubActions.isConnected ? "Reconnect Runner" : "Connect Runner") { connect() }
-                    .disabled(working != nil || !hasToken)
+                    .disabled(working != nil)
                 if draft.githubActions.isConnected {
                     Button("Disconnect", role: .destructive) { disconnect() }
                         .disabled(working != nil)
@@ -764,7 +775,7 @@ private struct GitHubActionsStep: View {
             Stepper("Time limit: \(draft.githubActions.timeoutMinutes) min", value: $draft.githubActions.timeoutMinutes, in: 10...360, step: 10)
             HStack {
                 Button("Add Workflow to Repository") { installWorkflow() }
-                    .disabled(working != nil || !hasToken || !draft.githubActions.isConnected)
+                    .disabled(working != nil || !draft.githubActions.isConnected)
                 Button("Copy") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(ActionsWorkflow.yaml(for: draft), forType: .string)
@@ -803,6 +814,23 @@ private struct GitHubActionsStep: View {
     // MARK: Actions
 
     @MainActor
+    private func useGitHubCLI() {
+        working = "gh"
+        result = nil
+        Task {
+            do {
+                let cli = try await model.githubCLIToken()
+                secrets.new[.githubToken] = cli.token
+                secrets.removed.remove(.githubToken)
+                cliAccount = cli.login.isEmpty ? "your account" : cli.login
+            } catch {
+                result = (false, describe(error), nil)
+            }
+            working = nil
+        }
+    }
+
+    @MainActor
     private func connect() {
         working = "runner"
         progress = ""
@@ -811,12 +839,17 @@ private struct GitHubActionsStep: View {
         let token = self.token
         Task {
             do {
-                let config = try await model.connectActions(snapshot, token: token) { line in
+                let connected = try await model.connectActions(snapshot, token: token) { line in
                     let text = line.trimmed
                     guard !text.isEmpty else { return }
                     Task { @MainActor in progress = text }
                 }
-                draft.githubActions = config
+                draft.githubActions = connected.config
+                // Keep whichever token worked (it may be the GitHub CLI login) for Save.
+                if connected.token != token {
+                    secrets.new[.githubToken] = connected.token
+                    secrets.removed.remove(.githubToken)
+                }
                 result = (true, "Runner connected. Add the workflow next.", nil)
             } catch {
                 result = (false, describe(error), nil)

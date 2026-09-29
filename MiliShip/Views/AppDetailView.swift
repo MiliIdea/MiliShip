@@ -12,6 +12,7 @@ struct AppDetailView: View {
     @EnvironmentObject private var model: AppModel
     @State private var tab: Tab = .tags
     @State private var search = ""
+    @State private var keychainError: String?
     let app: AppConfig
 
     init(app: AppConfig) {
@@ -227,13 +228,24 @@ struct AppDetailView: View {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                         Text(problem).font(.callout)
                         Spacer()
-                        Button("Fix…") { model.beginEdit(app.id, step: model.wizardStep(for: problem)) }
-                            .buttonStyle(.link)
+                        if problem.hasPrefix("Keychain:") {
+                            Button("Allow Access…") { keychainError = model.repairKeychain(for: app.id) }
+                                .buttonStyle(.link)
+                                .help("macOS asks once; choose Always Allow. Mili Ship then saves the secrets again itself.")
+                        } else {
+                            Button("Fix…") { model.beginEdit(app.id, step: model.wizardStep(for: problem)) }
+                                .buttonStyle(.link)
+                        }
                     }
                 }
             }
             .padding(10)
             .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        if let keychainError {
+            Banner(symbol: "key.slash", color: .red, text: keychainError, actionTitle: "Configure") {
+                model.beginEdit(app.id)
+            }
         }
         if let error = refresh.error {
             Banner(symbol: "wifi.exclamationmark", color: .red, text: error, actionTitle: "Retry") {

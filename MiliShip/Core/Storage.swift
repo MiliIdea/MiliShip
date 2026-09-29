@@ -188,6 +188,43 @@ enum Keychain {
         SecItemAdd(add as CFDictionary, nil)
     }
 
+    enum Availability { case missing, readable, blocked }
+
+    /// Whether a secret exists and can be read without asking. Never shows a system prompt.
+    static func availability(_ key: SecretKey, app: UUID) -> Availability {
+        var request = search(key, app: app)
+        request[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        request[kSecMatchLimit as String] = kSecMatchLimitOne
+        var attributes = request
+        attributes[kSecReturnAttributes as String] = true
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(attributes as CFDictionary, &item) == errSecSuccess else { return .missing }
+        var data = request
+        data[kSecReturnData as String] = true
+        return SecItemCopyMatching(data as CFDictionary, &item) == errSecSuccess ? .readable : .blocked
+    }
+
+    /// Secrets that are saved but that macOS won't hand to this build without asking — typically items
+    /// written by another tool or by a build signed differently.
+    static func blockedKeys(for app: UUID) -> [SecretKey] {
+        SecretKey.allCases.filter { availability($0, app: app) == .blocked }
+    }
+
+    /// Reads each blocked secret once (macOS asks the user to allow it) and saves it again from this app,
+    /// so later reads never prompt. Returns the keys that are still unreadable.
+    @discardableResult
+    static func repair(app: UUID) -> [SecretKey] {
+        var failed: [SecretKey] = []
+        for key in blockedKeys(for: app) {
+            if let value = get(key, app: app), !value.isEmpty {
+                set(value, for: key, app: app)
+            } else {
+                failed.append(key)
+            }
+        }
+        return failed
+    }
+
     static func all(for app: UUID) -> [SecretKey: String] {
         var result: [SecretKey: String] = [:]
         for key in SecretKey.allCases {
